@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Create shareable Diffchecker URLs from the CLI."""
+import argparse
+import json
+import os
+import sys
+import tempfile
+import urllib.request
+import urllib.error
+
+API_URL = "https://api.diffchecker.com/diffs"
+CONFIG_PATH = os.path.expanduser("~/.config/diffcheck/config.json")
+BASE_URL = "https://www.diffchecker.com"
+
+
+def load_config():
+    """Load config file."""
+    if os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH) as f:
+            return json.load(f)
+    return {}
+
+
+def save_config(config):
+    """Save config file."""
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(config, f, indent=2)
+
+
+def build_multipart(fields, files):
+    """Build multipart/form-data body without external deps."""
+    boundary = "----DiffcheckBoundary9876543210"
+    body = b""
+    for key, val in fields.items():
+        body += f"--{boundary}\r\n".encode()
+        body += f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode()
+        body += f"{val}\r\n".encode()
+    for key, (filename, content, mime) in files.items():
+        body += f"--{boundary}\r\n".encode()
+        body += f'Content-Disposition: form-data; name="{key}"; filename="{filename}"\r\n'.encode()
+        body += f"Content-Type: {mime}\r\n\r\n".encode()
+        if isinstance(content, str):
+            content = content.encode()
+        body += content + b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+    content_type = f"multipart/form-data; boundary={boundary}"
+    return body, content_type
+
+
+def create_diff(left, right, title="", expiry="1_day", private=False):
+    """Post diff to Diffchecker API and return slug."""
+    config = load_config()
+    fields = {
+        "diffType": "text",
+        "expiry": expiry,
+        "isPrivate": str(private).lower(),
+        "title": title,
+        "permission": "view",
+    }
+    files = {
+        "leftFile": ("left.txt", left, "text/plain"),
+        "rightFile": ("right.txt", right, "text/plain"),
+    }
+    body, content_type = build_multipart(fields, files)
+
+    headers = {
+        "Content-Type": content_type,
+        "Origin": "https://www.diffchecker.com",
+    }
+    session = config.get("session")
+    if session:
+        headers["Cookie"] = f"diffsession={session}"
+
+    req = urllib.request.Request(API_URL, data=body, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+            return data
+    except urllib.error.HTTPError as e:
+        err = e.read().decode() if e.fp else ""
+        print(f"Error: HTTP {e.code}", file=sys.stderr)
+        if err:
+            print(err[:500], file=sys.stderr)
+        sys.exit(1)
+
+
+def read_file_or_stdin(path):
+    """Read file content, or stdin if path is '-'."""
+    if path == "-":
+        return sys.stdin.read()
+    with open(path) as f:
+        return f.read()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Create shareable Diffchecker URLs")
+    sub = parser.add_subparsers(dest="command")
+
+    # login
+    login_p = sub.add_parser("login", help="Store session cookie")
+    login_p.add_argument("session", help="diffsession cookie value")
+
+    # whoami
+    sub.add_parser("whoami", help="Check logged-in user")
+
+    # diff (default)
+    diff_p = sub.add_parser("diff", help="Create a shareable diff")
+    diff_p.add_argument("left", help="Left file path or '-' for stdin")
+    diff_p.add_argument("right", nargs="?", help="Right file path")
+    diff_p.add_argument("--left-text", help="Left text directly")
+    diff_p.add_argument("--right-text", help="Right text directly")
+    diff_p.add_argument("--title", "-t", default="", help="Diff title")
+    diff_p.add_argument("--expiry", "-e", default="1_day",
+                        choices=["1_hour", "1_day", "1_week", "1_month", "forever"],
+                        help="Expiry (default: 1_day)")
+    diff_p.add_argument("--private", action="store_true", help="Make diff private")
+    diff_p.add_argument("--json", action="store_true", help="Output full JSON response")
+
+    args = parser.parse_args()
+
+    if args.command == "login":
+        val = args.session
+        # strip cookie name prefix if user pastes full cookie
+        if val.startswith("diffsession="):
+            val = val[len("diffsession="):]
+        config = load_config()
+        config["session"] = val
+        save_config(config)
+        print("Session saved.")
+        return
+
+    if args.command == "whoami":
+        config = load_config()
+        session = config.get("session")
+        if not session:
+            print("Not logged in. Run: diffcheck login <session_cookie>", file=sys.stderr)
+            sys.exit(1)
+        req = urllib.request.Request(
+            "https://api.diffchecker.com/users/me",
+            headers={
+                "Cookie": f"diffsession={session}",
+                "Origin": "https://www.diffchecker.com",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                user = json.loads(resp.read().decode())
+                print(f"{user.get('name', 'Unknown')} ({user.get('email', '?')})")
+        except urllib.error.HTTPError as e:
+            print(f"Error: HTTP {e.code} — session may be expired", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    if args.command == "diff":
+        left = args.left_text if args.left_text else read_file_or_stdin(args.left)
+        if args.right_text:
+            right = args.right_text
+        elif args.right:
+            right = read_file_or_stdin(args.right)
+        else:
+            print("Error: provide right file or --right-text", file=sys.stderr)
+            sys.exit(1)
+
+        result = create_diff(left, right, args.title, args.expiry, args.private)
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            print(f"{BASE_URL}/{result['slug']}/")
+        return
+
+    # no subcommand — check if positional args look like files (backward compat)
+    remaining = sys.argv[1:]
+    if len(remaining) >= 2 and not remaining[0].startswith("-"):
+        # treat as: diffcheck <left> <right> [flags]
+        sys.argv = [sys.argv[0], "diff"] + remaining
+        main()
+        return
+
+    parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
