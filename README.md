@@ -5,9 +5,13 @@ Create shareable [Diffchecker](https://www.diffchecker.com) URLs from the comman
 ## Install
 
 ```bash
+# As a CLI tool
 uv tool install diffchecker-skill
 # or
 pip install diffchecker-skill
+
+# As a Claude Code skill
+npx skills add wise-toddler/diffchecker-skill -g
 ```
 
 ## Usage
