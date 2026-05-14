@@ -7,7 +7,7 @@ description: Create shareable Diffchecker URLs for comparing text, files, or cod
 
 Create shareable Diffchecker URLs from the CLI using `diffcheck`.
 
-If `diffcheck` is not found, it lives at `~/code/sandbox/diffchecker-skill/diffcheck`.
+If `diffcheck` is not found, install it first: `uv tool install diffchecker-skill`
 
 ## Setup
 

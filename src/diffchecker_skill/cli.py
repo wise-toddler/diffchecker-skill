@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Create shareable Diffchecker URLs from the CLI."""
 import argparse
 import json
